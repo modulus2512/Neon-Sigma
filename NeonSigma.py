@@ -6,7 +6,7 @@ from datetime import datetime
 import plotly.express as px
 
 # 1. 페이지 설정
-st.set_page_config(page_title="NEON SIGMA: Asset & Milestone Tracker v5.10", layout="wide")
+st.set_page_config(page_title="NEON SIGMA: Asset & Milestone Tracker v5.14", layout="wide")
 
 # --- [NEON PULSE] 커스텀 사이버펑크 CSS ---
 st.markdown("""
@@ -20,6 +20,10 @@ st.markdown("""
     .neon-card:hover { box-shadow: 0 0 25px rgba(0, 255, 204, 0.25); border: 1px solid rgba(0, 255, 204, 0.8); }
     .neon-title { margin: 0; font-size: 1rem; color: #8892B0; font-weight: bold; }
     .neon-value { margin: 0; font-size: 2.1rem; font-weight: bold; color: #E6F1FF; letter-spacing: -0.5px; }
+    .pulse-panel { 
+        border: 1px solid #FF007F; background-color: rgba(255, 0, 127, 0.03); 
+        padding: 20px; border-radius: 8px; margin-top: 10px; margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,8 +163,7 @@ with st.sidebar:
         st.info("💡 세금/수수료 단차로 인한 어플과의 달러 잔고 차이를 맞춥니다.")
         name, ticker, category = "달러 예수금", "USD", "기타"
         price = 1.0
-        # [v5.10 수정] UI 안내 문구 추가
-        qty = st.number_input("보정 수량 (USD) ※ 양수/음수 구분 기재", value=0.0, step=None, help="예: 잔고에서 6.40 달러를 빼야 한다면 -6.40 을 입력하세요.")
+        qty = st.number_input("보정 수량 (USD) ※ 차감은 음수(-), 추가는 양수(+) 기입", value=0.0, step=None, help="예: 잔고에서 6.40 달러를 빼야 한다면 -6.40 을 입력하세요.")
         fee = 0.0
         transaction_ex_rate = st.number_input("적용 환율 (₩/$)", min_value=800.0, value=float(round(realtime_ex_rate, 2)), step=1.0)
         note = st.text_input("비고", placeholder="예: 세전 배당금 단차 보정")
@@ -260,8 +263,8 @@ with st.sidebar:
                 st.error(f"❌ 저장 중 오류 발생: {e}")
 
 # 5. 계산 엔진
-st.title("🛡️ NEON SIGMA: Asset & Milestone Tracker v5.10")
-st.caption("⚙️ **System Update:** 달러 예수금 UI 보정 가이드 문구 추가 (Build 260524)")
+st.title("🛡️ NEON SIGMA: Asset & Milestone Tracker v5.14")
+st.caption("⚙️ **System Update:** NULL 렌더링 버그 픽스 및 Swift 로직 안정화 (Build 260529)")
 
 st.info("⚠️ **[데이터 평가액 오차 안내]** yfinance API는 실시간 FX 환율 및 시간외 거래 시세를 반영하므로, 증권사 어플의 '고정 고시 환율' 및 '공식 종가'와는 필연적인 평가액 오차가 발생할 수 있습니다 (대략적 성과 및 마일스톤 지표로 활용).")
 
@@ -274,6 +277,7 @@ def calculate_eval_krw(row, ex_rate):
         return final_price * float(row['Qty'])
 
 def calculate_total_invested_krw(row):
+    # 시스템 총 원금: 보정액 등은 무시하고 '환전'과 '국내 매수'만 합산
     if row['Type'] == "환전":
         return float(row['Price']) * float(row['Qty']) * float(row['Ex_Rate'])
     elif str(row['Account']).strip() != '해외직투' and row['Type'] in ["정기매수", "추가매수"]:
@@ -358,34 +362,28 @@ with tabs[1]:
                 current_category_assets[cat] = 0.0
 
         other_val_krw = current_category_assets["기타"]
+        core_eval_krw = total_eval_krw_ui - other_val_krw
 
         cat_grouped = df.copy()
         cat_grouped['Effective_Price'] = cat_grouped.apply(lambda x: current_price_dict.get(x['Ticker']) if current_price_dict.get(x['Ticker']) is not None else float(x['Price']), axis=1)
-        
         cat_summary = cat_grouped.groupby(['Sim_Category', 'Ticker', 'Account', 'Name']).agg(
-            Eval_Sum=('Eval_Value_KRW_UI', 'sum'),
-            Price_Unit=('Effective_Price', 'first')
+            Eval_Sum=('Eval_Value_KRW_UI', 'sum'), Price_Unit=('Effective_Price', 'first')
         ).reset_index()
 
         st.markdown("#### 🎯 목표 비중: Target Matrix")
         change_others = st.toggle("기타 자산(달러 예수금 포함) 비중 변경", value=False)
-        
-        core_eval_krw = total_eval_krw_ui - other_val_krw
         base_for_weights = total_eval_krw_ui if change_others else core_eval_krw
 
         default_weights = {"모멘텀": 0.0, "배당": 0.0, "커버드 콜": 0.0, "채권": 0.0, "기타": 0.0}
-        
         if base_for_weights > 0:
             if change_others:
-                for cat in default_weights.keys():
-                    default_weights[cat] = round((current_category_assets[cat] / base_for_weights) * 100, 2)
+                for cat in default_weights.keys(): default_weights[cat] = round((current_category_assets[cat] / base_for_weights) * 100, 2)
                 weight_sum = round(sum(default_weights.values()), 2)
                 if weight_sum > 0 and weight_sum != 100.00:
                     largest_cat = max(default_weights, key=default_weights.get)
                     default_weights[largest_cat] = round(default_weights[largest_cat] + (100.00 - weight_sum), 2)
             else:
-                for cat in standard_categories:
-                    default_weights[cat] = round((current_category_assets[cat] / base_for_weights) * 100, 2)
+                for cat in standard_categories: default_weights[cat] = round((current_category_assets[cat] / base_for_weights) * 100, 2)
                 weight_sum = round(sum([default_weights[cat] for cat in standard_categories]), 2)
                 if weight_sum > 0 and weight_sum != 100.00:
                     largest_cat = max(standard_categories, key=lambda c: default_weights[c])
@@ -406,6 +404,48 @@ with tabs[1]:
         else:
             st.markdown("---")
             
+            # --- [v5.14] NEON-PULSE Swift Portfolio (Sell to Buy) ---
+            st.markdown("#### ⚡ NEON-PULSE: Swift Portfolio Control")
+            use_pulse = st.toggle("QLD 정산 Swift 포트폴리오 연계 모드 활성화", value=False)
+            
+            if use_pulse:
+                st.markdown("""
+                <div class='pulse-panel'>
+                    <span style='color:#FF007F; font-weight:bold;'>[SYSTEM]</span> 공격적 스위칭(Sell to Buy) 모드 활성화. 초과 보유한 자산을 깎아내어(Trim) 현금을 확보한 뒤, 신규 투자금과 합산하여 우선순위에 따라 폭포수(Waterfall)처럼 채워 넣습니다.
+                </div>
+                """, unsafe_allow_html=True)
+                
+                p_col1, p_col2 = st.columns(2)
+                with p_col1:
+                    guidance_level = st.selectbox("Leverage Guidance 레벨 선택", [
+                        "[FULL-THROTTLE] 레버리지 100%", "[STEADY-CRUISE] 상승주 70%, 레버리지 30%",
+                        "[WAVE BOARDING] 상승주 80%, 레버리지 20%", "[HOLD & PAUSE] 상승주 100%",
+                        "[AGILE SWITCH] 상승주 100% (레버리지 전량 매도)", "[SPRING-LOAD] 상승주 30%, 레버리지 70%"
+                    ], index=1)
+                    
+                    momentum_tickers = df[df['Sim_Category'] == '모멘텀']['Ticker'].dropna().unique().tolist()
+                    lev_tickers = st.multiselect("레버리지(QLD 등) 자산 티커 지정", momentum_tickers, default=[t for t in momentum_tickers if "QLD" in str(t)], help="모멘텀 카테고리 중 레버리지 비율을 적용받을 자산을 선택하세요.")
+
+                with p_col2:
+                    st.write("🎯 적립 우선순위 설정 (계단식)")
+                    p_opts = ["모멘텀", "채권", "배당", "커버드 콜", "기타"]
+                    p1 = st.selectbox("1순위 (최우선)", p_opts, index=0)
+                    p2 = st.selectbox("2순위", [o for o in p_opts if o != p1], index=0)
+                    p3 = st.selectbox("3순위", [o for o in p_opts if o not in [p1, p2]], index=0)
+                    p4 = st.selectbox("4순위", [o for o in p_opts if o not in [p1, p2, p3]], index=0)
+                    p5 = st.selectbox("5순위 (최하위)", [o for o in p_opts if o not in [p1, p2, p3, p4]], index=0)
+                    priorities = [p1, p2, p3, p4, p5]
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                if "[FULL-THROTTLE]" in guidance_level: up_ratio, lev_ratio = 0.0, 1.0
+                elif "[STEADY-CRUISE]" in guidance_level: up_ratio, lev_ratio = 0.7, 0.3
+                elif "[WAVE BOARDING]" in guidance_level: up_ratio, lev_ratio = 0.8, 0.2
+                elif "[HOLD & PAUSE]" in guidance_level: up_ratio, lev_ratio = 1.0, 0.0
+                elif "[AGILE SWITCH]" in guidance_level: up_ratio, lev_ratio = 1.0, 0.0
+                elif "[SPRING-LOAD]" in guidance_level: up_ratio, lev_ratio = 0.3, 0.7
+                else: up_ratio, lev_ratio = 0.7, 0.3
+
             st.markdown("#### 💰 자산 현황 및 신규 투자: Sigma Simulation")
             new_investment = st.number_input("이달의 신규 투입 자금 (₩)", min_value=0, value=2000000, step=100000, format="%d")
             
@@ -415,82 +455,139 @@ with tabs[1]:
             rebal_pool_krw = simulated_total_asset if change_others else (simulated_total_asset - other_val_krw)
             
             rebalance_data = []
-            buy_instructions = []
-            
+            gap_dict = {}
+
+            if use_pulse:
+                mom_df = df[df['Sim_Category'] == '모멘텀']
+                cur_mom_lev = mom_df[mom_df['Ticker'].isin(lev_tickers)]['Eval_Value_KRW_UI'].sum()
+                cur_mom_up = current_category_assets.get('모멘텀', 0.0) - cur_mom_lev
+
             for category in ordered_categories:
                 current_val = current_category_assets.get(category, 0.0)
                 
                 if category == "기타" and not change_others:
                     target_w_str = "-"
-                    current_w_str = "-"
                     ideal_val = current_val
                     gap = 0.0
                 else:
                     target_w = target_weights[category]
-                    current_w = (current_val / base_for_weights * 100) if base_for_weights > 0 else 0.0
                     ideal_val = rebal_pool_krw * (target_w / 100.0)
                     gap = ideal_val - current_val
                     target_w_str = f"{target_w:.2f}%"
-                    current_w_str = f"{current_w:.2f}%"
-                    
-                rebalance_data.append({
-                    "카테고리": category,
-                    "목표 비중 (%)": target_w_str,
-                    "현재 비중 (%)": current_w_str,
-                    "현재 평가액": f"{current_val:,.0f} 원",
-                    "이상적 평가액": f"{ideal_val:,.0f} 원",
-                    "필요한 조치": gap
-                })
                 
-                if gap > 0:
-                    cat_summary_df = cat_summary[cat_summary['Sim_Category'] == category]
-                    if not cat_summary_df.empty:
-                        max_row = cat_summary_df.loc[cat_summary_df['Eval_Sum'].idxmax()]
-                        top_ticker = max_row['Ticker']
-                        top_name = max_row['Name']
-                        top_account = str(max_row['Account']).strip()
-                        display_asset = top_ticker if top_account == '해외직투' else top_name
-                        
-                        top_price_krw = float(max_row['Price_Unit']) * current_ex_rate_ui if top_account == '해외직투' else float(max_row['Price_Unit'])
-                        
-                        if top_price_krw > 0:
-                            est_shares = gap / top_price_krw
-                            share_text = f" (대표 종목 **{display_asset}** 기준 약 **{est_shares:.2f} 주**)"
-                        else:
-                            share_text = ""
-                    else:
-                        share_text = " (보유 종목 없음 - 신규 종목 발굴)"
+                gap_dict[category] = gap
 
-                    if category != "기타":
-                        buy_instructions.append(f"✅ **[{category}]** 약 **{gap:,.0f} 원** 매수 요망 {share_text}")
-                    elif category == "기타" and change_others:
-                        buy_instructions.append(f"💡 **[기타 자산]** 약 **{gap:,.0f} 원** 추가 투자 고려 {share_text}")
-
+                if use_pulse and category == "모멘텀":
+                    rebalance_data.append({
+                        "카테고리": "모멘텀 (상승주)", "목표 비중 (%)": f"{target_weights['모멘텀'] * up_ratio:.2f}%", 
+                        "현재 평가액": f"{cur_mom_up:,.0f} 원", "이상적 평가액": f"{ideal_val * up_ratio:,.0f} 원", 
+                        "필요한 조치": (ideal_val * up_ratio) - cur_mom_up
+                    })
+                    rebalance_data.append({
+                        "카테고리": "모멘텀 (레버리지)", "목표 비중 (%)": f"{target_weights['모멘텀'] * lev_ratio:.2f}%", 
+                        "현재 평가액": f"{cur_mom_lev:,.0f} 원", "이상적 평가액": f"{ideal_val * lev_ratio:,.0f} 원", 
+                        "필요한 조치": (ideal_val * lev_ratio) - cur_mom_lev
+                    })
+                else:
+                    rebalance_data.append({
+                        "카테고리": category, "목표 비중 (%)": target_w_str,
+                        "현재 평가액": f"{current_val:,.0f} 원", "이상적 평가액": f"{ideal_val:,.0f} 원",
+                        "필요한 조치": gap
+                    })
+            
             rebalance_df = pd.DataFrame(rebalance_data)
             
             def format_action(row):
-                gap = row["필요한 조치"]
+                g = row["필요한 조치"]
                 cat = row["카테고리"]
-                if cat == "기타" and not change_others:
-                    return "➖ 현상 유지 (리밸런싱 제외)"
-                if gap > 0:
-                    return f"🟢 {gap:,.0f} 원 매수 요망"
-                else:
-                    return f"🔴 {-gap:,.0f} 원 초과"
+                if cat == "기타" and not change_others: return "➖ 현상 유지 (리밸런싱 제외)"
+                if use_pulse and "AGILE SWITCH" in guidance_level and "레버리지" in cat: return "🚨 레버리지 전량 매도 요망"
+                if g > 0: return f"🟢 {g:,.0f} 원 매수 요망"
+                else: return f"🔴 {-g:,.0f} 원 초과"
                     
             rebalance_df["필요한 조치"] = rebalance_df.apply(format_action, axis=1)
             st.dataframe(rebalance_df, hide_index=True, use_container_width=True)
             
             st.markdown("#### 📌 최종 행동 지침: Action Plan")
-            st.info("💡 **거래 수수료 등 오차:** 이상적 평가액 전부 매수시 소량의 미수금 발생 가능")
             
-            if new_investment == 0:
+            if new_investment == 0 and not use_pulse:
                 st.caption("신규 투자 금액을 입력하면 구체적인 Action Plan이 도출됩니다.")
-            elif not buy_instructions:
-                st.success("현재 시스템 내 밸런스가 최적 상태입니다. 추가 매수가 필요하지 않습니다.")
+            elif not use_pulse:
+                buy_instructions = []
+                for category in ordered_categories:
+                    if gap_dict[category] > 0 and (category != "기타" or change_others):
+                        buy_instructions.append(f"✅ **[{category}]** 약 **{gap_dict[category]:,.0f} 원** 매수 요망")
+                if not buy_instructions: st.success("현재 시스템 내 밸런스가 최적 상태입니다. 추가 매수가 필요하지 않습니다.")
+                else: 
+                    for inst in buy_instructions: st.write(inst)
             else:
-                for inst in buy_instructions:
-                    st.write(inst)
+                # [v5.14 Waterfall Engine with Sell-to-Buy]
+                st.info("💡 **Swift Rebalancing (Sell to Buy):** 초과된 자산을 깎아내어(Trim) 확보한 현금과 신규 투자금을 합산해, 설정한 우선순위에 따라 순차적으로 채워 넣습니다.")
+                if "[AGILE SWITCH]" in guidance_level:
+                    st.error("🚨 **[긴급 시그널] AGILE SWITCH 발동:** 보유 중인 레버리지 자산을 전량 매도하여 현금을 확보하십시오.")
+                
+                sell_instructions = []
+                total_proceeds = 0.0
+                
+                m_ideal = rebal_pool_krw * (target_weights["모멘텀"] / 100.0)
+                gap_up = (m_ideal * up_ratio) - cur_mom_up
+                gap_lev = -cur_mom_lev if "[AGILE SWITCH]" in guidance_level else (m_ideal * lev_ratio) - cur_mom_lev
+                
+                # Phase 1: Surplus Calculation (Sell)
+                if gap_up < 0:
+                    sell_instructions.append(f"🔴 **[모멘텀 상승주]** 목표 초과. 약 **{-gap_up:,.0f} 원** 매도 요망")
+                    total_proceeds += -gap_up
+                if gap_lev < 0:
+                    sell_instructions.append(f"🔴 **[모멘텀 레버리지]** 목표 초과. 약 **{-gap_lev:,.0f} 원** 매도 요망")
+                    total_proceeds += -gap_lev
+                    
+                for cat in ordered_categories:
+                    if cat == "모멘텀": continue
+                    if cat == "기타" and not change_others: continue
+                    g = gap_dict.get(cat, 0)
+                    if g < 0:
+                        sell_instructions.append(f"🔴 **[{cat}]** 목표 초과. 약 **{-g:,.0f} 원** 매도 요망")
+                        total_proceeds += -g
+                
+                st.write("##### 🔄 [Phase 1] 자산 매도 및 현금 확보 (Trim)")
+                if not sell_instructions: st.write("⚪ 초과된 자산이 없어 매도 지침이 없습니다.")
+                else:
+                    for inst in sell_instructions: st.write(inst)
+                    st.write(f"👉 **확보 예상 현금:** **{total_proceeds:,.0f} 원**")
+
+                # Phase 2: Waterfall Allocation (Buy)
+                rem_cash = new_investment + total_proceeds
+                st.write("##### 🌊 [Phase 2] 폭포수 매수 배정 (Waterfall Allocation)")
+                st.write(f"👉 **총 가용 자금 (신규 투자금 + 매도 대금):** **{rem_cash:,.0f} 원**")
+                
+                buy_instructions_pulse = []
+                for prio in priorities:
+                    if prio == "모멘텀":
+                        for sub_name, sub_gap in [("모멘텀 상승주", gap_up), ("모멘텀 레버리지", gap_lev)]:
+                            if sub_gap > 0:
+                                alloc = min(rem_cash, sub_gap)
+                                if alloc > 0:
+                                    buy_instructions_pulse.append(f"🟢 **[1순위-{sub_name}]** **{alloc:,.0f} 원** 매수 배정")
+                                    rem_cash -= alloc
+                                else: buy_instructions_pulse.append(f"⚪ **[{sub_name}]** 자금 부족으로 매수 생략 (필요: {sub_gap:,.0f}원)")
+                    elif prio != "기타" or change_others:
+                        g_val = gap_dict.get(prio, 0)
+                        if g_val > 0:
+                            alloc = min(rem_cash, g_val)
+                            if alloc > 0:
+                                buy_instructions_pulse.append(f"✅ **[{prio}]** **{alloc:,.0f} 원** 매수 배정")
+                                rem_cash -= alloc
+                            else: buy_instructions_pulse.append(f"⚪ **[{prio}]** 자금 부족으로 매수 생략 (필요: {g_val:,.0f}원)")
+                
+                # [v5.14 버그 수정] 리스트 컴프리헨션(List Comprehension) 대신 for 반복문 사용
+                if not buy_instructions_pulse: 
+                    st.write("⚪ 부족한 자산이 없어 매수 지침이 없습니다.")
+                else: 
+                    for b in buy_instructions_pulse: 
+                        st.write(b)
+                
+                if rem_cash > 0:
+                    st.success(f"🎉 **모든 목표 비중 달성!** 남은 자금 **{rem_cash:,.0f} 원**은 예수금으로 보유하거나 임의 투자하십시오.")
 
 # --- [ 탭 3: 마일스톤 2031 ] ---
 with tabs[2]:
@@ -560,7 +657,7 @@ with tabs[2]:
             cat_perf_table = cat_perf.copy()
             cat_perf_table['Invested'] = cat_perf_table['Invested'].apply(lambda x: f"₩ {x:,.0f}")
             cat_perf_table['Eval'] = cat_perf_table['Eval'].apply(lambda x: f"₩ {x:,.0f}")
-            cat_perf_table['Return_Pct'] = cat_perf_table['Return_Pct'].apply(lambda x: f"{x:.2f} %")
+            cat_perf_table['Return_Pct'] = cat_perf_table['Return_Pct'].apply(lambda x: f"{x:+.2f} %")
             cat_perf_table.columns = ['카테고리', '투입 원금', '현재 평가액', '수익률']
             
             st.dataframe(cat_perf_table, hide_index=True, use_container_width=True)
