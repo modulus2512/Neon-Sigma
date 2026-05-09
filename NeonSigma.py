@@ -5,49 +5,44 @@ import yfinance as yf
 from datetime import datetime
 import plotly.express as px
 
-# 0. 인증 정보 로드 확인
-if "connections" not in st.secrets:
-    st.error("❌ '.streamlit/secrets.toml' 파일을 찾을 수 없거나 형식이 잘못되었습니다.")
-    st.stop()
-
 # 1. 페이지 설정
-st.set_page_config(page_title="NEON SIGMA: Asset & Milestone Tracker v3.4", layout="wide")
+st.set_page_config(page_title="NEON SIGMA: Asset & Milestone Tracker v5.10", layout="wide")
 
 # --- [NEON PULSE] 커스텀 사이버펑크 CSS ---
 st.markdown("""
 <style>
-    .neon-text {
-        color: #00FFCC !important;
-        font-weight: bold;
-    }
+    .neon-text { color: #00FFCC !important; font-weight: bold; }
     .neon-card {
-        padding: 20px; 
-        border-radius: 8px; 
-        border: 1px solid rgba(0, 255, 204, 0.4); 
-        background-color: rgba(0, 255, 204, 0.02); 
-        box-shadow: 0 0 15px rgba(0, 255, 204, 0.1);
+        padding: 20px; border-radius: 8px; border: 1px solid rgba(0, 255, 204, 0.4); 
+        background-color: rgba(0, 255, 204, 0.02); box-shadow: 0 0 15px rgba(0, 255, 204, 0.1);
         transition: all 0.3s ease;
     }
-    .neon-card:hover {
-        box-shadow: 0 0 25px rgba(0, 255, 204, 0.25);
-        border: 1px solid rgba(0, 255, 204, 0.8); 
-    }
-    .neon-title {
-        margin: 0; 
-        font-size: 1.1rem; 
-        color: #8892B0; 
-        font-weight: bold; /* 작은 제목도 볼드 처리 */
-        /* font-family 삭제하여 Streamlit 기본 폰트와 완벽 동기화 */
-    }
-    .neon-value {
-        margin: 0; 
-        font-size: 2.2rem; 
-        font-weight: bold; /* 800 오류 수정, 확실한 볼드 적용 */
-        color: #E6F1FF;
-        letter-spacing: -0.5px;
-    }
+    .neon-card:hover { box-shadow: 0 0 25px rgba(0, 255, 204, 0.25); border: 1px solid rgba(0, 255, 204, 0.8); }
+    .neon-title { margin: 0; font-size: 1rem; color: #8892B0; font-weight: bold; }
+    .neon-value { margin: 0; font-size: 2.1rem; font-weight: bold; color: #E6F1FF; letter-spacing: -0.5px; }
 </style>
 """, unsafe_allow_html=True)
+
+# 0. 인증 정보 로드 및 SECURITY GATEKEEPER
+if "connections" not in st.secrets:
+    st.error("❌ '.streamlit/secrets.toml' 파일을 찾을 수 없거나 형식이 잘못되었습니다.")
+    st.stop()
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    st.markdown("<br><br><br><h2 style='text-align: center; color: #00FFCC; font-weight: bold;'>⚡ NEON PULSE : SYSTEM LOCK</h2>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        pwd = st.text_input("Enter Access Key", type="password")
+        if st.button("UNLOCK SYSTEM", use_container_width=True):
+            if "ACCESS_KEY" in st.secrets and pwd == st.secrets["ACCESS_KEY"]:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("❌ ACCESS DENIED: 키가 일치하지 않습니다.")
+    st.stop()
 
 # 2. GSheets 연결 설정
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1V_3ImpmGbJr-I1S3mhdCSijjcWMeFQ6vb89yJJvLH-I"
@@ -60,7 +55,7 @@ def load_data():
     try:
         df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_NAME, ttl=0)
         if df.empty or "Name" not in df.columns:
-            return pd.DataFrame(columns=["Date", "Account", "Name", "Ticker", "Category", "Type", "Price", "Qty", "Note"])
+            return pd.DataFrame(columns=["Date", "Account", "Name", "Ticker", "Category", "Type", "Price", "Qty", "Ex_Rate", "Note"])
         
         text_columns = ["Account", "Name", "Ticker", "Category", "Type", "Note"]
         for col in text_columns:
@@ -69,40 +64,64 @@ def load_data():
         
         df['Price'] = pd.to_numeric(df['Price'], errors='coerce').fillna(0.0)
         df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0.0)
+        df['Ex_Rate'] = pd.to_numeric(df.get('Ex_Rate', 1.0), errors='coerce').fillna(1.0)
                 
         return df
     except Exception as e:
         st.error(f"⚠️ 시트를 불러오는 중 오류가 발생했습니다: {e}")
-        return pd.DataFrame(columns=["Date", "Account", "Name", "Ticker", "Category", "Type", "Price", "Qty", "Note"])
+        return pd.DataFrame(columns=["Date", "Account", "Name", "Ticker", "Category", "Type", "Price", "Qty", "Ex_Rate", "Note"])
 
 df = load_data()
 
-# --- yfinance 실시간 현재가 불러오기 ---
+# --- yfinance 실시간 시장 변수 ---
 @st.cache_data(ttl=300)
 def get_current_prices(tickers):
-    prices = {}
+    prices = {"USD": 1.0} 
     for ticker in tickers:
-        if not ticker or ticker == "선택하세요" or ticker == "":
+        if not ticker or ticker == "선택하세요" or ticker == "" or ticker == "USD":
             continue
-            
         ticker_str = str(ticker).replace('.0', '')
-        formatted_ticker = f"{ticker_str}.KS" if ticker_str.isdigit() and len(ticker_str) == 6 else ticker_str
-        
-        try:
-            ticker_data = yf.Ticker(formatted_ticker)
-            hist = ticker_data.history(period="1d")
-            if not hist.empty:
-                prices[ticker] = float(hist['Close'].iloc[-1])
-            else:
+        if ticker_str.isdigit() and len(ticker_str) == 6:
+            try:
+                ticker_data = yf.Ticker(f"{ticker_str}.KS")
+                hist = ticker_data.history(period="1d")
+                if not hist.empty:
+                    prices[ticker] = float(hist['Close'].iloc[-1])
+                    continue
+                
+                ticker_data_kq = yf.Ticker(f"{ticker_str}.KQ")
+                hist_kq = ticker_data_kq.history(period="1d")
+                if not hist_kq.empty:
+                    prices[ticker] = float(hist_kq['Close'].iloc[-1])
+                    continue
+                    
                 prices[ticker] = None
-        except:
-            prices[ticker] = None
+            except:
+                prices[ticker] = None
+        else:
+            try:
+                ticker_data = yf.Ticker(ticker_str)
+                hist = ticker_data.history(period="1d")
+                if not hist.empty:
+                    prices[ticker] = float(hist['Close'].iloc[-1])
+                else:
+                    prices[ticker] = None
+            except:
+                prices[ticker] = None
     return prices
+
+@st.cache_data(ttl=3600)
+def get_realtime_usdkrw():
+    try:
+        return float(yf.Ticker("USDKRW=X").history(period="1d")['Close'].iloc[-1])
+    except:
+        return 1350.0 
 
 unique_tickers = df['Ticker'].dropna().unique().tolist() if not df.empty else []
 current_price_dict = get_current_prices(unique_tickers)
+realtime_ex_rate = get_realtime_usdkrw()
 
-# 4. 사이드바: 스마트 입력 폼 및 동기화
+# 4. 사이드바: 스마트 입력 폼
 with st.sidebar:
     st.markdown("### 🔄 시스템 동기화")
     if st.button("최신 DB 불러오기", use_container_width=True):
@@ -121,88 +140,130 @@ with st.sidebar:
     is_overseas = (account == "해외직투")
 
     st.markdown("---")
-
-    name_option = st.selectbox("종목명", ["선택하세요", "[신규 종목 직접 입력]"] + existing_names)
-    if name_option == "[신규 종목 직접 입력]":
-        name = st.text_input("새로운 종목명 입력", placeholder="예: Invesco QQQ")
-        auto_ticker = ""
-        auto_category = ""
-    else:
-        name = name_option if name_option != "선택하세요" else ""
-        auto_ticker = dict(zip(df['Name'], df['Ticker'])).get(name, "")
-        auto_category = dict(zip(df['Name'], df['Category'])).get(name, "")
-
-    ticker_options = ["선택하세요", "[신규 티커 직접 입력]"] + existing_tickers
-    ticker_default_idx = ticker_options.index(auto_ticker) if auto_ticker in ticker_options else 0
-    ticker_option = st.selectbox("티커", ticker_options, index=ticker_default_idx)
-    if ticker_option == "[신규 티커 직접 입력]":
-        ticker = st.text_input("새로운 티커 입력", placeholder="예: QQQ / 409820")
-    else:
-        ticker = ticker_option if ticker_option != "선택하세요" else ""
-
-    category_options = ["선택하세요", "[신규 카테고리 입력]"] + [c for c in existing_categories if c not in ["선택하세요", "[신규 카테고리 입력]"]]
-    category_default_idx = category_options.index(auto_category) if auto_category in category_options else 0
-    category_option = st.selectbox("카테고리", category_options, index=category_default_idx)
-    if category_option == "[신규 카테고리 입력]":
-        category = st.text_input("새로운 카테고리 입력")
-    else:
-        category = category_option if category_option != "선택하세요" else ""
-
-    trans_type = st.selectbox("거래유형", ["정기매수", "추가매수", "절세재매수", "배당재투자"])
-
-    st.markdown("---")
-
-    if is_overseas:
-        price = st.number_input("단가 ($ USD)", min_value=0.0, step=None)
-        note_prefix = "[USD] "
-    else:
-        price = st.number_input("단가 (₩ KRW)", min_value=0.0, step=None)
-        note_prefix = ""
-
-    qty = st.number_input("수량", min_value=0.0, step=None)
-    raw_note = st.text_input("비고", placeholder="임의 내용 작성")
-    note = note_prefix + raw_note
     
+    if is_overseas:
+        trans_type = st.selectbox("거래유형", ["정기매수", "추가매수", "매도", "배당금입금", "환전", "절세재매수", "배당재투자", "달러수수료보정"])
+    else:
+        trans_type = st.selectbox("거래유형", ["정기매수", "추가매수", "매도", "배당금입금", "배당재투자"])
+
+    if trans_type == "환전":
+        st.info("💡 외화 환전: '달러 예수금(USD)' 잔고가 증가합니다.")
+        name, ticker, category = "달러 예수금", "USD", "기타"
+        price = 1.0
+        qty = st.number_input("환전 금액 (USD)", min_value=0.0, step=None)
+        fee = 0.0
+        transaction_ex_rate = st.number_input("적용 환율 (₩/$)", min_value=800.0, value=float(round(realtime_ex_rate, 2)), step=1.0)
+        note = st.text_input("비고", placeholder="원화 가액 등 기록")
+        div_amount = 0.0
+    elif trans_type == "달러수수료보정":
+        st.info("💡 세금/수수료 단차로 인한 어플과의 달러 잔고 차이를 맞춥니다.")
+        name, ticker, category = "달러 예수금", "USD", "기타"
+        price = 1.0
+        # [v5.10 수정] UI 안내 문구 추가
+        qty = st.number_input("보정 수량 (USD) ※ 양수/음수 구분 기재", value=0.0, step=None, help="예: 잔고에서 6.40 달러를 빼야 한다면 -6.40 을 입력하세요.")
+        fee = 0.0
+        transaction_ex_rate = st.number_input("적용 환율 (₩/$)", min_value=800.0, value=float(round(realtime_ex_rate, 2)), step=1.0)
+        note = st.text_input("비고", placeholder="예: 세전 배당금 단차 보정")
+        div_amount = 0.0
+    else:
+        name_option = st.selectbox("종목명", ["선택하세요", "[신규 직접 입력]"] + existing_names)
+        if name_option == "[신규 직접 입력]":
+            name = st.text_input("종목명 입력")
+            auto_ticker, auto_category = "", ""
+        else:
+            name = name_option if name_option != "선택하세요" else ""
+            auto_ticker = dict(zip(df['Name'], df['Ticker'])).get(name, "")
+            auto_category = dict(zip(df['Name'], df['Category'])).get(name, "")
+
+        ticker_options = ["선택하세요", "[신규 직접 입력]"] + existing_tickers
+        ticker_default_idx = ticker_options.index(auto_ticker) if auto_ticker in ticker_options else 0
+        ticker = st.selectbox("티커", ticker_options, index=ticker_default_idx)
+        if ticker == "[신규 직접 입력]": ticker = st.text_input("티커 입력")
+        elif ticker == "선택하세요": ticker = ""
+
+        category_options = ["선택하세요", "[신규 직접 입력]"] + [c for c in existing_categories if c not in ["선택하세요", "[신규 직접 입력]"]]
+        category_default_idx = category_options.index(auto_category) if auto_category in category_options else 0
+        category = st.selectbox("카테고리", category_options, index=category_default_idx)
+        if category == "[신규 직접 입력]": category = st.text_input("카테고리 입력")
+        elif category == "선택하세요": category = ""
+
+        if trans_type == "배당금입금":
+            unit = "USD" if is_overseas else "KRW"
+            div_amount = st.number_input(f"배당 금액 ({unit})", min_value=0.0, step=None)
+            price, qty, fee = 0.0, 0.0, 0.0
+            transaction_ex_rate = st.number_input("당일 적용 환율 (₩/$)", min_value=800.0, value=float(round(realtime_ex_rate, 2)), step=1.0) if is_overseas else 1.0
+            note = st.text_input("비고", value=f"{name} 배당 입금")
+        else:
+            if is_overseas:
+                price = st.number_input("체결 단가 ($ USD)", min_value=0.0, step=None)
+                fee = st.number_input("제비용 ($ USD)", min_value=0.0, step=None)
+                transaction_ex_rate = st.number_input("당시 적용 환율 (₩/$)", min_value=800.0, value=float(round(realtime_ex_rate, 2)), step=1.0, help="해당 거래일의 환율을 기입하세요. 카테고리별 대략적 성과 분석에 사용됩니다.")
+                note_prefix = "[USD] "
+            else:
+                price = st.number_input("체결 단가 (₩ KRW)", min_value=0.0, step=None)
+                fee = 0.0
+                transaction_ex_rate = 1.0
+                note_prefix = ""
+            
+            qty = st.number_input("체결 수량 (양수 입력)", min_value=0.0, step=None)
+            raw_note = st.text_input("비고", placeholder="임의 내용 작성")
+            note = note_prefix + raw_note
+            div_amount = 0.0
+
     st.markdown("---")
 
     if st.button("DB에 기록하기", type="primary"):
-        if not name or name == "선택하세요":
-            st.error("종목명을 입력/선택해 주세요.")
-        elif not ticker or ticker == "선택하세요":
-            st.error("티커를 입력/선택해 주세요.")
-        elif not category or category == "선택하세요":
-            st.error("카테고리를 입력/선택해 주세요.")
-        elif qty <= 0:
-            st.error("수량은 0보다 커야 합니다.")
+        if not ticker or (trans_type not in ["환전", "달러수수료보정"] and not name):
+            st.error("필수 항목을 입력하세요.")
+        elif trans_type == "배당금입금" and div_amount <= 0:
+            st.error("배당 금액은 0보다 커야 합니다.")
+        elif trans_type in ["환전", "정기매수", "추가매수", "매도", "절세재매수", "배당재투자"] and qty <= 0:
+            st.error("수량(금액)은 0보다 커야 합니다.")
+        elif trans_type == "달러수수료보정" and qty == 0:
+            st.error("보정할 달러 수량을 0이 아닌 값으로 입력하세요. (차감 시 음수, 추가 시 양수)")
         else:
-            new_row = {
-                "Date": date.strftime("%Y-%m-%d"),
-                "Account": account,
-                "Name": name,
-                "Ticker": ticker,
-                "Category": category,
-                "Type": trans_type,
-                "Price": price,
-                "Qty": qty,
-                "Note": note
-            }
-            updated_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            rows_to_add = []
+            
+            if trans_type == "환전":
+                rows_to_add.append({"Date": date.strftime("%Y-%m-%d"), "Account": account, "Name": name, "Ticker": ticker, "Category": category, "Type": trans_type, "Price": price, "Qty": qty, "Ex_Rate": transaction_ex_rate, "Note": note})
+            elif trans_type == "달러수수료보정":
+                rows_to_add.append({"Date": date.strftime("%Y-%m-%d"), "Account": account, "Name": name, "Ticker": ticker, "Category": category, "Type": trans_type, "Price": price, "Qty": qty, "Ex_Rate": transaction_ex_rate, "Note": note})
+            elif trans_type == "배당금입금":
+                rows_to_add.append({"Date": date.strftime("%Y-%m-%d"), "Account": account, "Name": name, "Ticker": ticker, "Category": category, "Type": trans_type, "Price": price, "Qty": qty, "Ex_Rate": transaction_ex_rate, "Note": note})
+                if is_overseas:
+                    rows_to_add.append({"Date": date.strftime("%Y-%m-%d"), "Account": account, "Name": "달러 예수금", "Ticker": "USD", "Category": "기타", "Type": "배당금입금", "Price": 1.0, "Qty": div_amount, "Ex_Rate": transaction_ex_rate, "Note": f"[{ticker}] 배당 연동"})
+            else:
+                final_qty = -qty if trans_type == "매도" else qty
+                rows_to_add.append({"Date": date.strftime("%Y-%m-%d"), "Account": account, "Name": name, "Ticker": ticker, "Category": category, "Type": trans_type, "Price": price, "Qty": final_qty, "Ex_Rate": transaction_ex_rate, "Note": note})
+                
+                if is_overseas:
+                    if trans_type in ["정기매수", "추가매수", "절세재매수", "배당재투자"]:
+                        usd_qty = -(price * qty + fee)
+                        usd_type = "매수결제"
+                    elif trans_type == "매도":
+                        usd_qty = (price * qty - fee)
+                        usd_type = "매도입금"
+                    else:
+                        usd_qty = 0
+                        usd_type = "기타"
+                        
+                    if usd_qty != 0:
+                        rows_to_add.append({"Date": date.strftime("%Y-%m-%d"), "Account": account, "Name": "달러 예수금", "Ticker": "USD", "Category": "기타", "Type": usd_type, "Price": 1.0, "Qty": usd_qty, "Ex_Rate": transaction_ex_rate, "Note": f"[{ticker}] 거래 연동"})
+
+            updated_df = pd.concat([df, pd.DataFrame(rows_to_add)], ignore_index=True)
             try:
                 conn.update(spreadsheet=SPREADSHEET_URL, worksheet=SHEET_NAME, data=updated_df)
-                st.success("✅ 거래 내역이 기록되었습니다.")
+                st.success("✅ 거래 내역이 완벽히 기록되었습니다.")
                 st.cache_data.clear()
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ 저장 중 오류 발생: {e}")
 
-# 5. 메인 화면
-st.title("🛡️ NEON SIGMA: Asset & Milestone Tracker v3.4")
-st.caption("⚙️ **System Update:** 메트릭 카드 폰트 상속화 및 볼드체(Font-Weight) 렌더링 버그 수정 완료 (Build 260511)")
+# 5. 계산 엔진
+st.title("🛡️ NEON SIGMA: Asset & Milestone Tracker v5.10")
+st.caption("⚙️ **System Update:** 달러 예수금 UI 보정 가이드 문구 추가 (Build 260524)")
 
-tabs = st.tabs(["📊 거래 내역 확인", "⚖️ 리밸런싱 가이드", "🚀 마일스톤 2031"])
-
-# --- 전역 변수 사전 계산 ---
-current_ex_rate_global = 1350.0 
+st.info("⚠️ **[데이터 평가액 오차 안내]** yfinance API는 실시간 FX 환율 및 시간외 거래 시세를 반영하므로, 증권사 어플의 '고정 고시 환율' 및 '공식 종가'와는 필연적인 평가액 오차가 발생할 수 있습니다 (대략적 성과 및 마일스톤 지표로 활용).")
 
 def calculate_eval_krw(row, ex_rate):
     api_price = current_price_dict.get(row['Ticker'])
@@ -212,15 +273,24 @@ def calculate_eval_krw(row, ex_rate):
     else:
         return final_price * float(row['Qty'])
 
-def calculate_invested_krw(row, ex_rate):
-    if str(row['Account']).strip() == '해외직투':
-        return float(row['Price']) * float(row['Qty']) * ex_rate
-    else:
+def calculate_total_invested_krw(row):
+    if row['Type'] == "환전":
+        return float(row['Price']) * float(row['Qty']) * float(row['Ex_Rate'])
+    elif str(row['Account']).strip() != '해외직투' and row['Type'] in ["정기매수", "추가매수"]:
         return float(row['Price']) * float(row['Qty'])
+    return 0.0
+
+def calculate_category_invested_krw(row):
+    if row['Type'] in ['정기매수', '추가매수', '매도', '절세재매수', '배당재투자'] and row['Ticker'] != 'USD':
+        return float(row['Price']) * float(row['Qty']) * (float(row['Ex_Rate']) if str(row['Account']).strip() == '해외직투' else 1.0)
+    return 0.0
 
 if not df.empty:
-    df['Eval_Value_KRW'] = df.apply(lambda x: calculate_eval_krw(x, current_ex_rate_global), axis=1)
-    df['Invested_KRW'] = df.apply(lambda x: calculate_invested_krw(x, current_ex_rate_global), axis=1)
+    df['Eval_Value_KRW'] = df.apply(lambda x: calculate_eval_krw(x, realtime_ex_rate), axis=1)
+    df['Total_Invested_KRW'] = df.apply(calculate_total_invested_krw, axis=1)
+    df['Cat_Invested_KRW'] = df.apply(calculate_category_invested_krw, axis=1)
+
+tabs = st.tabs(["📊 거래 내역 확인", "⚖️ 리밸런싱 가이드", "🚀 마일스톤 2031"])
 
 ordered_categories = ["모멘텀", "배당", "커버드 콜", "채권", "기타"]
 def cat_sort_key(c):
@@ -241,10 +311,11 @@ def format_korean_currency(amount):
 # --- [ 탭 1: 거래 내역 확인 ] ---
 with tabs[0]:
     st.subheader("Database Confirm")
+    st.info("💡 **데이터 기록 원칙:** 외화 자산 거래 시 환율을 정확히 기입해 주시면 카테고리별 성과가 정확해집니다.")
     if df.empty:
         st.info("현재 기록된 데이터가 없습니다. 사이드바에서 첫 데이터를 입력해 주세요.")
     else:
-        display_cols = ["Date", "Account", "Name", "Ticker", "Category", "Type", "Price", "Qty", "Note"]
+        display_cols = ["Date", "Account", "Name", "Ticker", "Category", "Type", "Price", "Qty", "Ex_Rate", "Note"]
         edited_df = st.data_editor(
             df[display_cols], 
             num_rows="dynamic", 
@@ -252,7 +323,8 @@ with tabs[0]:
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker", help="yfinance 연동을 위한 티커"),
                 "Price": st.column_config.NumberColumn("Price"),
-                "Qty": st.column_config.NumberColumn("Qty")
+                "Qty": st.column_config.NumberColumn("Qty"),
+                "Ex_Rate": st.column_config.NumberColumn("Ex_Rate", help="해당 거래 당시의 환율")
             }
         )
         if st.button("수정사항 저장하기"):
@@ -270,16 +342,16 @@ with tabs[1]:
         st.warning("데이터가 부족하여 리밸런싱을 계산할 수 없습니다. 거래 내역을 먼저 등록해 주세요.")
     else:
         st.markdown("#### 🌍 실시간 시장 변수: Indexes")
-        current_ex_rate_ui = st.number_input("실시간 시장 환율 (원/$)", min_value=800.0, value=1350.0, step=1.0)
+        current_ex_rate_ui = st.number_input("실시간 시장 환율 (원/$)", min_value=800.0, value=float(round(realtime_ex_rate, 2)), step=1.0)
         
-        df['Eval_Value_KRW'] = df.apply(lambda x: calculate_eval_krw(x, current_ex_rate_ui), axis=1)
+        df['Eval_Value_KRW_UI'] = df.apply(lambda x: calculate_eval_krw(x, current_ex_rate_ui), axis=1)
         st.markdown("---")
 
         standard_categories = ["모멘텀", "배당", "커버드 콜", "채권"]
         df['Sim_Category'] = df['Category'].apply(lambda x: x if str(x).strip() in standard_categories else "기타")
 
-        total_eval_krw = df['Eval_Value_KRW'].sum()
-        current_category_assets = df.groupby('Sim_Category')['Eval_Value_KRW'].sum().to_dict()
+        total_eval_krw_ui = df['Eval_Value_KRW_UI'].sum()
+        current_category_assets = df.groupby('Sim_Category')['Eval_Value_KRW_UI'].sum().to_dict()
         
         for cat in standard_categories + ["기타"]:
             if cat not in current_category_assets:
@@ -291,15 +363,15 @@ with tabs[1]:
         cat_grouped['Effective_Price'] = cat_grouped.apply(lambda x: current_price_dict.get(x['Ticker']) if current_price_dict.get(x['Ticker']) is not None else float(x['Price']), axis=1)
         
         cat_summary = cat_grouped.groupby(['Sim_Category', 'Ticker', 'Account', 'Name']).agg(
-            Eval_Sum=('Eval_Value_KRW', 'sum'),
+            Eval_Sum=('Eval_Value_KRW_UI', 'sum'),
             Price_Unit=('Effective_Price', 'first')
         ).reset_index()
 
         st.markdown("#### 🎯 목표 비중: Target Matrix")
-        change_others = st.toggle("기타 자산 비중 변경 (선택 시 기타 항목도 리밸런싱 모수에 포함됩니다)", value=False)
+        change_others = st.toggle("기타 자산(달러 예수금 포함) 비중 변경", value=False)
         
-        core_eval_krw = total_eval_krw - other_val_krw
-        base_for_weights = total_eval_krw if change_others else core_eval_krw
+        core_eval_krw = total_eval_krw_ui - other_val_krw
+        base_for_weights = total_eval_krw_ui if change_others else core_eval_krw
 
         default_weights = {"모멘텀": 0.0, "배당": 0.0, "커버드 콜": 0.0, "채권": 0.0, "기타": 0.0}
         
@@ -337,8 +409,8 @@ with tabs[1]:
             st.markdown("#### 💰 자산 현황 및 신규 투자: Sigma Simulation")
             new_investment = st.number_input("이달의 신규 투입 자금 (₩)", min_value=0, value=2000000, step=100000, format="%d")
             
-            simulated_total_asset = total_eval_krw + new_investment
-            st.markdown(f"**현재 총 평가 자산:** 약 {total_eval_krw:,.0f} 원 &nbsp;&nbsp;➔&nbsp;&nbsp; **투자 후 예상 총 자산:** 약 <span class='neon-text'>{simulated_total_asset:,.0f}</span> 원", unsafe_allow_html=True)
+            simulated_total_asset = total_eval_krw_ui + new_investment
+            st.markdown(f"**현재 총 평가 자산:** 약 {total_eval_krw_ui:,.0f} 원 &nbsp;&nbsp;➔&nbsp;&nbsp; **투자 후 예상 총 자산:** 약 <span class='neon-text'>{simulated_total_asset:,.0f}</span> 원", unsafe_allow_html=True)
             
             rebal_pool_krw = simulated_total_asset if change_others else (simulated_total_asset - other_val_krw)
             
@@ -425,19 +497,17 @@ with tabs[2]:
     if df.empty:
         st.warning("데이터가 부족합니다. 거래 내역을 등록해 주세요.")
     else:
-        current_ex_rate_milestone = current_ex_rate_ui if 'current_ex_rate_ui' in locals() else 1350.0
+        stock_eval_krw = df[df['Ticker'] != 'USD']['Eval_Value_KRW'].sum()
+        cash_eval_krw = df[df['Ticker'] == 'USD']['Eval_Value_KRW'].sum()
+        cash_usd_qty = df[df['Ticker'] == 'USD']['Qty'].sum()
+        total_eval_krw = stock_eval_krw + cash_eval_krw
         
-        df['Eval_Value_KRW'] = df.apply(lambda x: calculate_eval_krw(x, current_ex_rate_milestone), axis=1)
-        df['Invested_KRW'] = df.apply(lambda x: calculate_invested_krw(x, current_ex_rate_milestone), axis=1)
-
-        total_invested_krw = df['Invested_KRW'].sum()
-        total_eval_krw = df['Eval_Value_KRW'].sum()
+        total_invested_krw = df['Total_Invested_KRW'].sum()
         total_return_pct = ((total_eval_krw / total_invested_krw) - 1) * 100 if total_invested_krw > 0 else 0.0
 
-        col_top_left, col_top_right = st.columns([1, 2])
+        col_top_left, col_top_mid, col_top_right = st.columns(3)
         
         with col_top_left:
-            st.markdown("##### 📈 총 자산 수익률 모니터링")
             st.markdown(f"""
             <div class="neon-card" style="margin-bottom: 20px;">
                 <p class="neon-title">총 투입 원금</p>
@@ -445,83 +515,60 @@ with tabs[2]:
             </div>
             """, unsafe_allow_html=True)
             
+        with col_top_mid:
+            st.markdown(f"""
+            <div class="neon-card" style="margin-bottom: 20px;">
+                <p class="neon-title" style="color: #FFD700;">보유 주식 평가액 (달러 예수금 제외)</p>
+                <p class="neon-value">₩ {stock_eval_krw:,.0f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col_top_right:
             delta_color = "#FF007F" if total_return_pct < 0 else "#39FF14"
             delta_sign = "+" if total_return_pct > 0 else ""
             st.markdown(f"""
             <div class="neon-card">
-                <p class="neon-title">현재 평가 자산</p>
+                <p class="neon-title">총 자산 (주식 + 달러 예수금)</p>
                 <p class="neon-value" style="font-size: 1.8rem;">
                     ₩ {total_eval_krw:,.0f} 
                     <span style="font-size: 1.2rem; color: {delta_color}; margin-left: 5px; text-shadow: 0 0 5px rgba(57, 255, 20, 0.4);">
                         ({delta_sign}{total_return_pct:.2f}%)
                     </span>
                 </p>
+                <p style="margin-top: 8px; font-size: 0.9rem; color: #8892B0;">💵 달러 예수금: <strong style="color:#00FFCC;">{cash_usd_qty:,.2f} USD</strong></p>
             </div>
             """, unsafe_allow_html=True)
-            
-        with col_top_right:
-            st.markdown("##### 📉 월별 신규 투입 자산 트렌드 (최근 12개월)")
-            
-            current_date_mock = datetime(2026, 5, 1)
-            df['Date_dt'] = pd.to_datetime(df['Date'], errors='coerce')
-            df_trend = df.copy()
-            
-            last_12_months = pd.period_range(start=current_date_mock - pd.DateOffset(months=11), end=current_date_mock, freq='M')
-            month_labels = last_12_months.strftime('%Y년 %m월').tolist()
-            
-            df_trend['Month_str'] = df_trend['Date_dt'].dt.strftime('%Y년 %m월')
-            recent_df = df_trend[df_trend['Month_str'].isin(month_labels)]
-            
-            monthly_invest = recent_df.groupby('Month_str')['Invested_KRW'].sum().reset_index()
-            trend_df = pd.DataFrame({'Month': month_labels})
-            trend_df = trend_df.merge(monthly_invest, left_on='Month', right_on='Month_str', how='left').fillna(0)
-            
-            trend_df['Invested_Man'] = trend_df['Invested_KRW'] / 10000
-            trend_df['Invested_Man_Text'] = trend_df['Invested_Man'].apply(lambda x: f"{x:,.0f}" if x > 0 else "")
-            
-            fig_bar = px.bar(trend_df, x='Month', y='Invested_Man', text='Invested_Man_Text')
-            fig_bar.update_layout(
-                template="plotly_dark",
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-                xaxis_title=None,
-                yaxis_title=None,
-                height=320,
-                margin=dict(l=0, r=0, t=10, b=0),
-                yaxis=dict(ticksuffix="만", showgrid=False),
-                xaxis=dict(tickangle=-45, showgrid=False)
-            )
-            fig_bar.update_traces(
-                textposition='outside',
-                marker_color='#00FFCC',
-                hovertemplate='%{x}<br>투입 금액: %{y:,.0f}만 원<extra></extra>'
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
 
         st.markdown("---")
 
-        st.markdown("##### 📊 카테고리별 성과")
-        cat_perf = df.groupby('Category').agg(
-            Invested=('Invested_KRW', 'sum'),
-            Eval=('Eval_Value_KRW', 'sum')
-        ).reset_index()
+        st.markdown("##### 📊 ETF 카테고리별 대략적 성과")
         
-        cat_perf['SortKey'] = cat_perf['Category'].apply(cat_sort_key)
-        cat_perf = cat_perf.sort_values(['SortKey', 'Category']).drop(columns=['SortKey'])
+        df_etf = df[df['Category'] != '기타']
         
-        cat_perf['Return_Pct'] = ((cat_perf['Eval'] / cat_perf['Invested']) - 1) * 100
-        cat_perf.fillna(0, inplace=True)
-        
-        cat_perf_table = cat_perf.copy()
-        cat_perf_table['Invested'] = cat_perf_table['Invested'].apply(lambda x: f"₩ {x:,.0f}")
-        cat_perf_table['Eval'] = cat_perf_table['Eval'].apply(lambda x: f"₩ {x:,.0f}")
-        cat_perf_table['Return_Pct'] = cat_perf_table['Return_Pct'].apply(lambda x: f"{x:.2f} %")
-        cat_perf_table.columns = ['카테고리', '투입 원금', '현재 평가액', '수익률']
-        
-        st.dataframe(cat_perf_table, hide_index=True, use_container_width=True)
+        if not df_etf.empty:
+            cat_perf = df_etf.groupby('Category').agg(
+                Invested=('Cat_Invested_KRW', 'sum'),
+                Eval=('Eval_Value_KRW', 'sum')
+            ).reset_index()
+            
+            cat_perf['SortKey'] = cat_perf['Category'].apply(cat_sort_key)
+            cat_perf = cat_perf.sort_values(['SortKey', 'Category']).drop(columns=['SortKey'])
+            
+            cat_perf['Return_Pct'] = ((cat_perf['Eval'] / cat_perf['Invested']) - 1) * 100
+            cat_perf.fillna(0, inplace=True)
+            
+            cat_perf_table = cat_perf.copy()
+            cat_perf_table['Invested'] = cat_perf_table['Invested'].apply(lambda x: f"₩ {x:,.0f}")
+            cat_perf_table['Eval'] = cat_perf_table['Eval'].apply(lambda x: f"₩ {x:,.0f}")
+            cat_perf_table['Return_Pct'] = cat_perf_table['Return_Pct'].apply(lambda x: f"{x:.2f} %")
+            cat_perf_table.columns = ['카테고리', '투입 원금', '현재 평가액', '수익률']
+            
+            st.dataframe(cat_perf_table, hide_index=True, use_container_width=True)
+        else:
+            st.info("표시할 ETF 자산 내역이 없습니다.")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("##### 📝 카테고리별 거래 로그")
+        st.markdown("##### 📝 전체 카테고리별 거래 로그 (기타 자산 포함)")
         sorted_categories = sorted(df['Category'].unique(), key=cat_sort_key)
         
         for cat in sorted_categories:
@@ -531,27 +578,28 @@ with tabs[2]:
                 summary_text = " / ".join([f"{k}: {v}회" for k, v in counts.items()])
                 
                 st.markdown(f"**총 거래 요약:**<br><span style='color:gray'>{summary_text}</span>", unsafe_allow_html=True)
-                st.dataframe(cat_data[['Date', 'Account', 'Name', 'Ticker', 'Type', 'Price', 'Qty', 'Note']], hide_index=True)
+                st.dataframe(cat_data[['Date', 'Account', 'Name', 'Ticker', 'Type', 'Price', 'Qty', 'Ex_Rate', 'Note']], hide_index=True)
 
         st.markdown("---")
         
-        st.subheader("🎯 주택자금 조달 계획")
+        st.subheader("🎯 주택자금 조달 계획 (2031년 2월 목표)")
         
         remaining_months = 57 
-        st.info(f"⏳ **목표 시점(2031년 2월)까지 남은 기간:** {remaining_months}개월")
+        st.info(f"⏳ **목표 시점까지 남은 기간:** {remaining_months}개월")
         
         st.markdown("##### 💰 성실한 투자")
         monthly_savings = st.number_input("매월 신규 저축액 (₩)", min_value=0, value=2500000, step=100000)
         
         st.markdown("##### 🌱 복리 증식 시뮬레이터")
-        extend_milestone = st.toggle("마일스톤 연장 (현재 시스템 수익률 그대로 반영)", value=True)
+        extend_milestone = st.toggle("마일스톤 연장 (현재 시스템 수익률 기준 반영)", value=False)
         
         if extend_milestone:
             assumed_annual_rate = total_return_pct if total_return_pct > 0 else 5.0
             annual_rate = st.number_input("예상 연평균 수익률 (%)", value=float(f"{assumed_annual_rate:.2f}"), disabled=True)
-            st.success(f"✅ **시스템 자동 연동:** 현재 포트폴리오의 누적 수익률인 **+{assumed_annual_rate:.2f}%**가 2031년까지 그대로 적용됩니다.")
+            st.warning(f"⚠️ **수익률 환산 주의:** 현재 포트폴리오의 단순 누적 수익률인 **{assumed_annual_rate:.2f}%**를 연평균 수익률로 강제 연장합니다. 투자 기간이 1년 미만인 경우, 단기 수익을 연 단위로 가정하는 것은 통계적 과대평가를 유발할 수 있습니다.")
         else:
             annual_rate = st.number_input("예상 연평균 수익률 (%)", value=7.0, step=0.1)
+            st.caption(f"※ 참고: 현재 포트폴리오의 단순 누적 수익률은 {total_return_pct:.2f}% 입니다.")
                 
         r_monthly = (annual_rate / 100) / 12
         n_months = remaining_months
